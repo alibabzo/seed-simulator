@@ -2,9 +2,11 @@ module Lib
   ( simulation
   ) where
 
-import Control.Monad
-import Data.List
-import System.Random (randomIO)
+import Control.Monad (when)
+import Data.Array
+import Data.List (transpose)
+import Data.List.Split (chunksOf)
+import System.Random (randomRIO)
 
 data Square
   = Soil
@@ -30,20 +32,10 @@ fieldLength = 20
 
 fieldWidth = 35
 
--- defined as a list of rows: [[fieldWidth], [fieldWidth], ...]
---                            <--------- fieldLength --------->
-type Field = [[Square]]
+type Field = Array (Int, Int) Square
 
--- TODO: improve this
-replace :: Int -> Int -> a -> [[a]] -> [[a]]
-replace x y newVal (c:cs)
-  | x == 0 = newRow : cs
-  | otherwise = c : replace (x - 1) y newVal cs
-  where
-    newRow = rep y c
-    rep n (r:rs)
-      | n == 0 = newVal : rs
-      | otherwise = r : rep (n - 1) rs
+replace :: Square -> (Int, Int) -> Field -> Field
+replace val xy = flip (//) [(xy, val)]
 
 getOptions :: IO Options
 getOptions = do
@@ -70,27 +62,29 @@ simulation = do
   printField field
   where
     years n = last . take n $ iterate (>>= simulateYear) (return initialField)
-    initialField = createNewField 10 17
+    initialField = createNewField 17 10
 
 createNewField :: Int -> Int -> Field
 createNewField xpos ypos = seededSoil
   where
-    soil = replicate fieldLength (replicate fieldWidth Soil)
-    seededSoil = replace xpos ypos Seed soil
+    soil =
+      array
+        ((0, 0), (fieldWidth, fieldLength))
+        [((x, y), Soil) | x <- [0 .. fieldWidth], y <- [0 .. fieldLength]]
+    seededSoil = soil // [((xpos, ypos), Seed)]
 
 printField :: Field -> IO ()
-printField f = putStrLn f'
-  where
-    f' = concatMap ((++ "\n") . concatMap show) f
+printField f = putStrLn $ concatMap ((++ "\n") . concatMap show) $ transpose $ chunksOf (fieldLength + 1) $ elems f
 
 -- TODO: can this be made more monadic?
 simulateYear :: Field -> IO Field
 simulateYear x = do
-  rnd <- randomIO :: IO Int
-  let (x1, frost) = simulateSpring rnd x
+  sprRnd <- randomRIO (0, 1) :: IO Int
+  sumRnd <- randomRIO (0, 2) :: IO Int
+  let (x1, frost) = simulateSpring sprRnd x
   when frost $ putStrLn "There has been a frost"
   printField x1
-  let (x2, drought) = simulateSummer rnd x1
+  let (x2, drought) = simulateSummer sumRnd x1
   when drought $ putStrLn "There has been a severe drought"
   printField x2
   let x3 = simulateAutumn x2
@@ -101,53 +95,84 @@ simulateYear x = do
 -- Seeds become plants, 50% chance of frost (kills every 3rd plant)
 simulateSpring :: Int -> Field -> (Field, Bool)
 simulateSpring rnd field
-  | rnd `mod` 2 == 0 = (plantField field, False)
-  | otherwise = (map (frost 0) (plantField field), True)
+  | rnd == 1 = (spring field, False)
+  | otherwise = (frost $ spring field, True)
   where
-    frost _ [] = []
-    frost n [x]
-      | x == Plant && n `mod` 2 == 1 = [Soil]
-      | otherwise = [x]
-    frost n (x:xs)
-      | x == Plant && n `mod` 2 == 1 = Soil : frost (n + 1) xs
-      | x == Plant = x : frost (n + 1) xs
-      | otherwise = x : frost n xs
-    plantField = map (map spring)
-    spring s
-      | s == Seed = Plant
-      | otherwise = s
+    spring field =
+      apply field $
+      map
+        (replace Plant)
+        [ (x, y)
+        | x <- [0 .. fieldWidth]
+        , y <- [0 .. fieldLength]
+        , field ! (x, y) == Seed
+        ]
+    frost field =
+      apply field $
+      each 3 $
+      map
+        (replace Soil)
+        [ (x, y)
+        | x <- [0 .. fieldWidth]
+        , y <- [0 .. fieldLength]
+        , field ! (x, y) == Plant
+        ]
 
 -- 50% chance of drought (every other plant becomes soil)
 simulateSummer :: Int -> Field -> (Field, Bool)
 simulateSummer rnd field
-  | rnd `mod` 3 == 0 = (map (drought 0) field, True)
+  | rnd == 0 = (drought field, True)
   | otherwise = (field, False)
   where
-    drought _ [] = []
-    drought n [Plant]
-      | n `mod` 2 == 1 = [Soil]
-      | otherwise = [Plant]
-    drought n (Plant:xs)
-      | n `mod` 2 == 1 = Soil : drought (n + 1) xs
-      | otherwise = Plant : drought n xs
-    drought n (x:xs) = x : drought n xs
+    drought field =
+      apply field $
+      each 2 $
+      map
+        (replace Soil)
+        [ (x, y)
+        | x <- [0 .. fieldWidth]
+        , y <- [0 .. fieldLength]
+        , field ! (x, y) == Plant
+        ]
 
 -- Every plant drops seeds in radius 1 around it
 simulateAutumn :: Field -> Field
-simulateAutumn field = map autumn (columns field)
+simulateAutumn = autumn
   where
-    columns field = transpose $ map autumn (transpose field)
-    autumn [] = []
-    autumn [x] = [x]
-    autumn (Soil:Plant:Soil:ys) = Seed : Plant : Seed : autumn ys
-    autumn (Soil:Plant:xs) = Seed : Plant : autumn xs
-    autumn (Plant:Soil:ys) = Plant : Seed : autumn ys
-    autumn (x:xs) = x : autumn xs
+    autumn field =
+      apply field $
+      concatMap
+        (drop field)
+        [ (x, y)
+        | x <- [0 .. fieldWidth]
+        , y <- [0 .. fieldLength]
+        , field ! (x, y) == Plant
+        ]
+    drop field (x, y) =
+      [ replace Seed (a, b)
+      | a <- [x - 1 .. x + 1]
+      , b <- [y - 1 .. y + 1]
+      , 0 <= a && a <= fieldWidth
+      , 0 <= b && b <= fieldLength
+      , field ! (a, b) == Soil
+      ]
 
 -- Every plant dies
 simulateWinter :: Field -> Field
-simulateWinter = map (map winter)
-  where
-    winter s
-      | s == Plant = Soil
-      | otherwise = s
+simulateWinter field =
+  apply field $
+  map
+    (replace Soil)
+    [ (x, y)
+    | x <- [0 .. fieldWidth]
+    , y <- [0 .. fieldLength]
+    , field ! (x, y) == Plant
+    ]
+
+each :: Int -> [a] -> [a]
+each n = map last . chunksOf n
+
+apply :: Field -> [Field -> Field] -> Field
+apply x [] = x
+apply x [f] = f x
+apply x (f:fs) = apply (f x) fs
