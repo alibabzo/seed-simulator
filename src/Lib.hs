@@ -16,6 +16,17 @@ data Square
   | None
   deriving (Eq)
 
+-- TODO: make this a manually-implemented instance of Read instead
+-- I couldn't really be bothered to read docs
+read' :: Char -> Square
+read' char =
+  case char of
+    '.' -> Soil
+    'S' -> Seed
+    'P' -> Plant
+    'R' -> Rock
+    _ -> None
+
 instance Show Square where
   show Soil = "."
   show Seed = "S"
@@ -42,10 +53,10 @@ getOptions = do
   putStrLn
     "Welcome to the Plant Growing Simulation.\n\
     \You can step through the simulation a year at a time\n\
-    \or run the simulation for 0 to 5 years.\n\
+    \or run the simulation for 1 to n years.\n\
     \How many years do you want the simulation to run for?"
   years <- getLine
-  putStrLn "Do you want to enable stepping mode? (Y/N)"
+  putStrLn "Do you want to enable stepping mode? (N)"
   step <- getLine
   putStrLn "Do you want to load a file with seed positions? (Y/N)"
   loadFile <- getLine
@@ -58,11 +69,32 @@ getOptions = do
 simulation :: IO ()
 simulation = do
   options <- getOptions
-  field <- years (yearsToRun options)
-  printField field
+  if step options
+    then stepSim options
+    else sim options
   where
-    years n = last . take n $ iterate (>>= simulateYear) (return initialField)
-    initialField = createNewField 17 10
+    sim options = do
+      field <- years options
+      printField field
+      putStrLn "End of Simulation"
+    stepSim options = putStrLn "not implemented"
+    years options =
+      last . take (yearsToRun options) $
+      iterate (>>= simulateYear) (initialField options)
+    initialField options
+      | not (loadFile options) = return $ createNewField 17 10
+      | otherwise = parseFile
+
+parseFile :: IO Field
+parseFile = do
+  putStrLn "Enter file name"
+  filePath <- getLine
+  contents <- readFile filePath
+  return $ arr . flatten $ contents
+  where
+    indexes = [(x, y) | x <- [0 .. fieldWidth], y <- [0 .. fieldLength]]
+    arr = array ((0, 0), (fieldWidth, fieldLength)) . zip indexes
+    flatten = concatMap (map read') . transpose . lines
 
 createNewField :: Int -> Int -> Field
 createNewField xpos ypos = seededSoil
@@ -76,24 +108,23 @@ createNewField xpos ypos = seededSoil
 printField :: Field -> IO ()
 printField =
   putStrLn .
-  concatMap ((++ "\n") . concatMap show) .
-  transpose . chunksOf (fieldLength + 1) . elems
+  unlines .
+  map (concatMap show) . transpose . chunksOf (fieldLength + 1) . elems
 
 -- TODO: can this be made more monadic?
 simulateYear :: Field -> IO Field
 simulateYear x = do
-  sprRnd <- randomRIO (0, 1) :: IO Int
-  sumRnd <- randomRIO (0, 2) :: IO Int
-  let (x1, frost) = simulateSpring sprRnd x
+  r1 <- randomRIO (0, 1) :: IO Int
+  r2 <- randomRIO (0, 2) :: IO Int
+  let (spr, frost) = simulateSpring r1 x
   when frost $ putStrLn "There has been a frost"
-  printField x1
-  let (x2, drought) = simulateSummer sumRnd x1
+  printField spr
+  let (summ, drought) = simulateSummer r2 spr
   when drought $ putStrLn "There has been a severe drought"
-  printField x2
-  let x3 = simulateAutumn x2
-  printField x3
-  let x4 = simulateWinter x3
-  return x4
+  printField summ
+  let aut = simulateAutumn summ
+  printField aut
+  return $ simulateWinter aut
 
 -- Seeds become plants, 50% chance of frost (kills every 3rd plant)
 simulateSpring :: Int -> Field -> (Field, Bool)
@@ -173,7 +204,9 @@ simulateWinter field =
     ]
 
 each :: Int -> [a] -> [a]
-each n = map last . chunksOf n
+each n l
+  | length l > n = map last . chunksOf n $ l
+  | otherwise = []
 
 apply :: Field -> [Field -> Field] -> Field
 apply x [] = x
