@@ -74,7 +74,10 @@ createNewField xpos ypos = seededSoil
     seededSoil = soil // [((xpos, ypos), Seed)]
 
 printField :: Field -> IO ()
-printField f = putStrLn $ concatMap ((++ "\n") . concatMap show) $ transpose $ chunksOf (fieldLength + 1) $ elems f
+printField =
+  putStrLn .
+  concatMap ((++ "\n") . concatMap show) .
+  transpose . chunksOf (fieldLength + 1) . elems
 
 -- TODO: can this be made more monadic?
 simulateYear :: Field -> IO Field
