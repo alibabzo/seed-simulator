@@ -13,7 +13,6 @@ data Square
   | Seed
   | Plant
   | Rock
-  | None
   deriving (Eq)
 
 -- TODO: make this a manually-implemented instance of Read instead
@@ -21,11 +20,11 @@ data Square
 read' :: Char -> Square
 read' char =
   case char of
-    '.' -> Soil
     'S' -> Seed
     'P' -> Plant
-    'R' -> Rock
-    _ -> None
+    'X' -> Rock
+    '.' -> Soil
+    _ -> error "parseFile: Unrecognised character"
 
 instance Show Square where
   show Soil = "."
@@ -45,22 +44,19 @@ fieldWidth = 35
 
 type Field = Array (Int, Int) Square
 
-replace :: Square -> (Int, Int) -> Field -> Field
-replace val xy = flip (//) [(xy, val)]
-
 getOptions :: IO Options
 getOptions = do
   putStrLn
     "Welcome to the Plant Growing Simulation.\n\
-    \You can step through the simulation a year at a time\n\
-    \or run the simulation for 1 to n years.\n\
-    \How many years do you want the simulation to run for?"
+        \You can step through the simulation a year at a time\n\
+        \or run the simulation for 1 to n years.\n\
+        \How many years do you want the simulation to run for?"
   years <- getLine
   putStrLn "Do you want to enable stepping mode? (N)"
-  step <- getLine
+  doStep <- getLine
   putStrLn "Do you want to load a file with seed positions? (Y/N)"
-  loadFile <- getLine
-  return (Options (parseBool step) (read years :: Int) (parseBool loadFile))
+  doFile <- getLine
+  return (Options (parseBool doStep) (read years :: Int) (parseBool doFile))
   where
     parseBool x
       | x == "Y" || x == "y" = True
@@ -70,14 +66,14 @@ simulation :: IO ()
 simulation = do
   options <- getOptions
   if step options
-    then stepSim options
+    then stepSim
     else sim options
   where
     sim options = do
       field <- years options
       printField field
       putStrLn "End of Simulation"
-    stepSim options = putStrLn "not implemented"
+    stepSim = undefined
     years options =
       last . take (yearsToRun options) $
       iterate (>>= simulateYear) (initialField options)
@@ -111,7 +107,6 @@ printField =
   unlines .
   map (concatMap show) . transpose . chunksOf (fieldLength + 1) . elems
 
--- TODO: can this be made more monadic?
 simulateYear :: Field -> IO Field
 simulateYear x = do
   r1 <- randomRIO (0, 1) :: IO Int
@@ -132,24 +127,21 @@ simulateSpring rnd field
   | rnd == 1 = (spring field, False)
   | otherwise = (frost $ spring field, True)
   where
-    spring field =
-      apply field $
-      map
-        (replace Plant)
-        [ (x, y)
+    spring fld =
+      fld //
+      [ ((x, y), Plant)
+      | x <- [0 .. fieldWidth]
+      , y <- [0 .. fieldLength]
+      , fld ! (x, y) == Seed
+      ]
+    frost fld =
+      fld //
+      each
+        3
+        [ ((x, y), Soil)
         | x <- [0 .. fieldWidth]
         , y <- [0 .. fieldLength]
-        , field ! (x, y) == Seed
-        ]
-    frost field =
-      apply field $
-      each 3 $
-      map
-        (replace Soil)
-        [ (x, y)
-        | x <- [0 .. fieldWidth]
-        , y <- [0 .. fieldLength]
-        , field ! (x, y) == Plant
+        , fld ! (x, y) == Plant
         ]
 
 -- 50% chance of drought (every other plant becomes soil)
@@ -158,32 +150,30 @@ simulateSummer rnd field
   | rnd == 0 = (drought field, True)
   | otherwise = (field, False)
   where
-    drought field =
-      apply field $
-      each 2 $
-      map
-        (replace Soil)
-        [ (x, y)
+    drought fld =
+      fld //
+      each
+        2
+        [ ((x, y), Soil)
         | x <- [0 .. fieldWidth]
         , y <- [0 .. fieldLength]
-        , field ! (x, y) == Plant
+        , fld ! (x, y) == Plant
         ]
 
 -- Every plant drops seeds in radius 1 around it
 simulateAutumn :: Field -> Field
-simulateAutumn = autumn
+simulateAutumn field = field // replacements
   where
-    autumn field =
-      apply field $
+    replacements =
       concatMap
-        (drop field)
+        seed
         [ (x, y)
         | x <- [0 .. fieldWidth]
         , y <- [0 .. fieldLength]
         , field ! (x, y) == Plant
         ]
-    drop field (x, y) =
-      [ replace Seed (a, b)
+    seed (x, y) =
+      [ ((a, b), Seed)
       | a <- [x - 1 .. x + 1]
       , b <- [y - 1 .. y + 1]
       , 0 <= a && a <= fieldWidth
@@ -194,21 +184,14 @@ simulateAutumn = autumn
 -- Every plant dies
 simulateWinter :: Field -> Field
 simulateWinter field =
-  apply field $
-  map
-    (replace Soil)
-    [ (x, y)
-    | x <- [0 .. fieldWidth]
-    , y <- [0 .. fieldLength]
-    , field ! (x, y) == Plant
-    ]
+  field //
+  [ ((x, y), Soil)
+  | x <- [0 .. fieldWidth]
+  , y <- [0 .. fieldLength]
+  , field ! (x, y) == Plant
+  ]
 
 each :: Int -> [a] -> [a]
 each n l
   | length l > n = map last . chunksOf n $ l
   | otherwise = []
-
-apply :: Field -> [Field -> Field] -> Field
-apply x [] = x
-apply x [f] = f x
-apply x (f:fs) = apply (f x) fs
